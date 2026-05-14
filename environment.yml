@@ -1,0 +1,14 @@
+name: enose-plif
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python>=3.9
+  - numpy
+  - pandas
+  - scipy
+  - matplotlib
+  - h5py
+  - pip
+  - pip:
+    - openpyxl
