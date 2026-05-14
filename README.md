@@ -1,4 +1,4 @@
-# enose-plif-datadescriptor
+# datadescriptor-enose-plif
 
 Data analysis pipeline for combined e-nose (electronic nose) and PLIF (Planar Laser-Induced Fluorescence) sensor data. Provides tools for loading, processing, analyzing, and visualizing synchronized e-nose and PLIF measurements for gas concentration estimation.
 
