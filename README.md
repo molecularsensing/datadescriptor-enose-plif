@@ -36,12 +36,7 @@ This project enables the fusion of high-frequency e-nose resistive metal-oxide (
 │   └── misc.py           # Metrics and utility functions
 ├── notebooks/            # Interactive Jupyter analysis
 ├── data/                 # Data storage
-│   ├── CALIBRATED_1057x1058_imgs/   # Calibrated background frames
-│   ├── enose-plif-combined/         # Temporally aligned CSV datasets
-│   ├── flatfield/                   # Flat-field correction coefficients
-│   └── r*_processed/                  # Processed example outputs
 ├── figs/                 # Generated publication figures
-└── arxiv/                # Supporting documents
 ```
 
 ## Supported Experiments
@@ -64,6 +59,13 @@ conda create --file environment.yml
 ```
 
 ## Quick Start
+
+### Get datasets
+Download [datasets](https://doi.org/10.3929/ethz-c-000782611) and save in an appropriate location.
+
+### Change paths to dataset
+In `utils/constants.py`, change `SSD_PLIF_FOLDER` and `SSD_COMBINED_FOLDER` to where your data is located.
+
 
 ### Inspect a combined dataset
 
