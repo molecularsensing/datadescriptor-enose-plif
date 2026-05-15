@@ -123,18 +123,6 @@ The concentration estimation workflow consists of three stages:
 
 3. **Evaluation** — Metrics (correlation, RMSE, etc.) are computed and comparison plots are generated showing ground-truth PLIF against each estimation method.
 
-## Configuration
-
-Edit `utils/constants.py` to customize:
-
-- **`ENSENSE_BOUNDS`** — Camera ROI coordinates for each location (LC, LR, LU)
-- **`PLIF_USEFUL_BOUNDS`** — Sub-region coordinates for each zone (A, B, C, D)
-- **`MOX_PLIF_BOUND_RELATIONSHIPS`** — Mapping of MOx sensor IDs to PLIF zones
-- **`LOCATIONS`** — Experiment-to-location mapping
-- **`SPEEDS`** — Flow speed for each experiment
-- **`PLIF_REFS`** — Reference experiment for each location
-- **Sampling frequencies** — `PLIF_SAMPLING_FREQUENCY` (20 Hz), `MOX_SAMPLING_FREQUENCY` (1000 Hz)
-
 ## Scripts Reference
 
 | Script | Description |
