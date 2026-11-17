@@ -1,0 +1,11 @@
+experiment,location,velocity_cm_s,valid_percent_sensor_1,valid_percent_sensor_2,valid_percent_sensor_3,valid_percent_sensor_4,valid_percent_sensor_5,valid_percent_sensor_6,valid_percent_sensor_7,valid_percent_sensor_8
+r56,C,10,100,98.1,0,100,100,14.2,0,100
+r57,C,15,100,70.9,0,100,100,0,0,100
+r58,C,20,100,43.8,0,100,100,0.1,0,100
+r59,C,10,100,98.8,0,100,100,8.9,0,100
+r60,C,15,100,77.3,0,100,100,0.1,0,100
+r61,C,20,100,41.6,0,100,100,0,0,100
+r70,R,10,100,100,100,100,100,100,100,100
+r71,R,10,100,100,100,100,100,100,100,100
+r75,U,10,100,92,0,100,100,2.1,0,100
+r76,U,10,100,85,0,100,100,2.2,0,100

@@ -184,16 +184,6 @@ def coherence_table(exp_id: str, df: pd.DataFrame) -> list[dict[str, object]]:
         concentration = df.loc[frame_mask, f"plif_{zone}"].to_numpy()
         freq, coherence = signal.coherence(log_conductance, concentration, fs=PLIF_SAMPLING_FREQUENCY, nperseg=256)
 
-        # Lowest frequency above the coherence maximum at which coherence falls below 0.5.
-        peak = int(np.argmax(coherence))
-        below = np.flatnonzero(coherence[peak:] < 0.5)
-        if coherence[peak] < 0.5:
-            limit_hz = np.nan
-        elif len(below) == 0:
-            limit_hz = freq[-1]
-        else:
-            limit_hz = freq[peak + below[0]]
-
         rows.append({
             **_run_info(exp_id),
             "sensor": sensor,
@@ -201,7 +191,6 @@ def coherence_table(exp_id: str, df: pd.DataFrame) -> list[dict[str, object]]:
             "coherence_0.1_1_Hz": coherence[(freq >= 0.1) & (freq <= 1)].mean(),
             "coherence_1_5_Hz": coherence[(freq > 1) & (freq <= 5)].mean(),
             "coherence_5_10_Hz": coherence[freq > 5].mean(),
-            "coherence_above_0.5_up_to_Hz": limit_hz,
         })
     return rows
 
