@@ -19,15 +19,16 @@ def _load_enose_plif(exp_id: str):
 
 
 def compute_saturation(exp_ids: list[str] | None = None) -> pd.DataFrame:
-    """Compute percent of non-zero samples per sensor for each experiment."""
+    """Compute percent of non-saturated samples per sensor for each experiment.
+
+    A sample is saturated where R_gas is exactly 0, i.e. where R_gas_valid is False.
+    """
     exp_ids = exp_ids or DEFAULT_EXPERIMENTS
     saturation = {exp_id: {f"R_gas_{i}": 0.0 for i in range(1, 9)} for exp_id in exp_ids}
     for exp_id in exp_ids:
         df = _load_enose_plif(exp_id)
-        total = df.shape[0]
         for idx in range(1, 9):
-            zero_count = df[df[f"R_gas_{idx}"] == 0].shape[0]
-            saturation[exp_id][f"R_gas_{idx}"] = np.round(100 - 100 * zero_count / total, 1)
+            saturation[exp_id][f"R_gas_{idx}"] = np.round(100 * df[f"R_gas_valid_{idx}"].mean(), 1)
 
     df_sat = pd.DataFrame.from_dict(saturation, orient="index")
     df_sat["loc."] = [LOCATIONS[f"r{idx}"][1:] for idx in df_sat.index]
@@ -44,7 +45,7 @@ def save_saturation_table(df_sat: pd.DataFrame) -> None:
     """Save saturation table as percentages to the figs directory."""
     out_dir = Path(__file__).resolve().parent.parent.joinpath("figs")
     out_dir.mkdir(exist_ok=True)
-    df_percent = df_sat.applymap(lambda x: f"{x}%")
+    df_percent = df_sat.map(lambda x: f"{x}%")
     df_percent.to_csv(out_dir.joinpath("saturation.csv"), index=True)
     print(df_percent)
 

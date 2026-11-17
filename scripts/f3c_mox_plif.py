@@ -29,7 +29,8 @@ def _plot_plif_enose_pair(fig, ax, exp_id: str, loc_key: str, df, ab_cd: str) ->
 
         color = COLORS[zone]
         col = ENOSE_ZONE_SENSOR[zone]
-        ax[0].plot(df["time_s"], df[f"plif_{zone}"], c=color, label=f"Zone {zone}")
+        plif = df[df["plif_image"]]
+        ax[0].plot(plif["time_s"], plif[f"plif_{zone}"], c=color, label=f"Zone {zone}")
         ax[1].plot(df["time_s"], 1e6 * 1 / df[col], c=color, label=SENSOR_LABELS[zone])
         ax[0].set_ylim([0, 0.07])
         ax[1].set_xlim([196, 210])

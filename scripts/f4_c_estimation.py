@@ -1,5 +1,10 @@
 #%%
-"""Estimate PLIF concentration from e-nose signals with swappable stages."""
+"""Estimate PLIF concentration from e-nose signals with swappable stages.
+
+The e-nose signals are processed at their native 1 kHz rate. The estimates are
+compared with the measured PLIF frames only (20 Hz); no interpolated PLIF values
+are used.
+"""
 import sys
 from pathlib import Path
 
@@ -12,8 +17,8 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 from src.deadtime_compensation import DeadTimeCompensator
 from src.supervised_deconv import SupervisedDeconvolution
 from utils.plotting import configure_style, export_figure
-from utils.constants import ENOSE_ZONE_SENSOR, LOCATIONS, PLIF_USEFUL_BOUNDS
-from utils.combined_io import load_combined_csv
+from utils.constants import ENOSE_ZONE_SENSOR, LOCATIONS, PLIF_USEFUL_BOUNDS, PLIF_SAMPLING_FREQUENCY
+from utils.combined_io import load_combined_csv, zero_lag_smooth_for_downsampling
 from utils.misc import metrics
 
 # DEFAULT_EXPERIMENTS = ["56", "57", "58", "59", "60", "61", "70", "71", "75", "76"]
@@ -45,14 +50,14 @@ def default_derivative_transform(conductance: np.ndarray, dt: float) -> np.ndarr
     return savgol_filter(gradient, window_length, 5)
 
 
-def default_deconv_model(delta_t: float = 1e-3):
+def default_deconv_model(delta_t: float = 1.0 / PLIF_SAMPLING_FREQUENCY):
     """Factory for the default supervised deconvolution model (plug in your own)."""
     return SupervisedDeconvolution(delta_t=delta_t)
 
 
-def align_signals(aligner, time_s, conductance, plif):
-    """Align conductance and PLIF using an alignment object with fit_transform."""
-    return aligner.fit_transform(time_s, conductance, plif)
+def align_signals(aligner, time_s, conductance, frame_mask, plif_frames):
+    """Fit the dead time against the measured PLIF frames (aligner needs fit_frames)."""
+    return aligner.fit_frames(time_s, conductance, frame_mask, plif_frames)
 
 
 def run_deconvolution(model, conductance_aligned: np.ndarray, plif_aligned: np.ndarray) -> np.ndarray:
@@ -152,18 +157,35 @@ def process_experiment(
     for zone, _ in PLIF_USEFUL_BOUNDS[loc_key].items():
         print(f"Zone {zone}")
         sensor_col = ENOSE_ZONE_SENSOR[zone]
+        frames = df["plif_image"].to_numpy(dtype=bool)
         time_s = df["time_s"].to_numpy()
-        plif = df[f"plif_{zone}"].to_numpy()
+        plif = df.loc[frames, f"plif_{zone}"].to_numpy()
         conductance = 1.0 / df[sensor_col].to_numpy()
 
-        aligner = alignment_factory()
-        time_aligned, conductance_aligned, plif_aligned = align_signals(aligner, time_s, conductance, plif)
+        # E-nose processing at 1 kHz: derivative, and low-pass before sampling at 20 Hz.
+        dt = float(np.mean(np.diff(time_s)))
+        derivative = derivative_transform(conductance, dt)
+        conductance_lowpass = zero_lag_smooth_for_downsampling(
+            conductance, source_rate_hz=1.0 / dt, target_rate_hz=PLIF_SAMPLING_FREQUENCY
+        )
 
-        dt = float(np.mean(np.diff(time_aligned)))
-        deriv_est = derivative_transform(conductance_aligned, dt)
+        # Dead time from the measured PLIF frames, then sample at frame time + dead time.
+        aligner = align_signals(alignment_factory(), time_s, conductance, frames, plif)
+        time_aligned = time_s[frames][aligner.frame_keep]
+        plif_aligned = plif[aligner.frame_keep]
+        conductance_aligned = aligner.transform_frames(conductance_lowpass)
+        deriv_est = aligner.transform_frames(derivative)
 
         deconv = deconv_factory()
         deconv_est = run_deconvolution(deconv, conductance_aligned, plif_aligned)
+
+        print(f"  {sensor_col}: dead time {1e3 * aligner.get_dead_time():.0f} ms")
+        for label, estimate in (("raw", conductance_aligned), ("d/dt", deriv_est), ("deconvolution", deconv_est)):
+            in_window = (time_aligned > window[0]) & (time_aligned <= window[1])
+            print(
+                f"  Pearson r, {label}: {np.corrcoef(plif_aligned, estimate)[0, 1]:.2f} (full run), "
+                f"{np.corrcoef(plif_aligned[in_window], estimate[in_window])[0, 1]:.2f} (plotted window)"
+            )
 
         metrics(plif_aligned, conductance_aligned)
         metrics(plif_aligned, deriv_est)

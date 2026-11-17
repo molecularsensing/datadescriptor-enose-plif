@@ -15,7 +15,7 @@ COLORS = {"A": "#fc9272", "B": "#de2d26", "C": "#bcbddc", "D": "#756bb1"}
 
 def _load_enose_plif(exp_id: str):
     """Load combined e-nose/PLIF data for an experiment id."""
-    return load_combined_csv(f"r{exp_id}")
+    return load_combined_csv(f"r{exp_id}", sampling="native")
 
 
 def _plot_snr(exp_id: str, loc_key: str, df) -> None:

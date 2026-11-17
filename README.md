@@ -47,7 +47,32 @@ This project enables the fusion of high-frequency e-nose resistive metal-oxide (
 | r70 – r71  | LR       | 10           |
 | r75 – r76  | LU       | 10           |
 
-Each experiment maps a PLIF camera view (LC, LR, LU) to four sensing zones (A, B, C, D), each associated with a specific MOx gas sensor channel.
+Each experiment maps a PLIF camera view (LC, LR, LU) to four sensing zones (A, B, C, D), each associated with specific MOx gas sensor channels:
+
+| Zone | Sensors (`R_gas_n`) | Device |
+|------|---------------------|--------|
+| A    | 5, 6, 7             | SGX MiCS-6814 |
+| B    | 1, 2, 3             | SGX MiCS-6814 |
+| C    | 8                   | ScioSense CCS801 |
+| D    | 4                   | ScioSense CCS801 |
+
+## Combined CSV layout
+
+Each combined CSV has one row per e-nose sample (1 kHz):
+
+| Columns | Content |
+|---------|---------|
+| `timestamp`, `time_s` | E-nose time base |
+| `R_gas_1..8`, `T_heat_1..8`, `P_heat_1..8` | Sensor resistance (Ohm), hotplate temperature (°C), heater power (W) |
+| `t_celsius`, `rh_percent`, `p_mbar` | Ambient temperature, relative humidity, pressure |
+| `plif_image` | True on rows where a PLIF image was acquired (20 Hz) |
+| `plif_A..D` | **Measured** PLIF concentration of each zone; a value on `plif_image` rows, empty otherwise |
+| `plif_A_interp..D_interp` | Measured PLIF **interpolated** (PCHIP) to the e-nose timestamps; provided for convenience, these are not measurements |
+| `R_gas_valid_1..8` | False where the resistance reading is saturated (`R_gas` is exactly 0) |
+
+The PLIF acquisition rate is 20 Hz (Nyquist frequency 10 Hz). Interpolation does not add temporal resolution, so comparisons with PLIF should use the measured `plif_A..D` values.
+
+Files in the earlier layout (dense `plif_A..D`, no `R_gas_valid_*` columns) are converted to this layout when loaded; `scripts/make_combined_v2.py` converts the files themselves.
 
 ## Installation
 
@@ -80,19 +105,24 @@ inspect_combined_csv("56")  # experiment r56
 ```python
 from utils.combined_io import load_combined_dataset
 
-# Full interpolated CSV (e-nose time base)
+# Full CSV on the 1 kHz e-nose time base
+# (measured PLIF in plif_*, interpolated PLIF in plif_*_interp)
 full = load_combined_dataset("56", strategy="interpolated")
 
-# Native PLIF frames only (~20 Hz)
+# Rows of the measured PLIF frames only (~20 Hz)
 native = load_combined_dataset("56", strategy="plif_native")
 
-# Common-rate resampling at 100 Hz
+# Common-rate resampling at 100 Hz (e-nose channels are low-pass filtered
+# before downsampling; resampled PLIF is returned in plif_*_interp)
 common = load_combined_dataset(
     "56",
     strategy="common_rate",
     target_rate_hz=100.0,
     plif_source="native",
 )
+
+# Set saturated resistance readings to NaN
+masked = load_combined_dataset("56", strategy="interpolated", mask_saturated=True)
 ```
 
 ### Run concentration estimation pipeline
@@ -114,14 +144,14 @@ python scripts/f4_c_estimation.py
 
 The concentration estimation workflow consists of three stages:
 
-1. **Data Loading & Alignment** — Load combined e-nose/PLIF CSV data and align signals using `DeadTimeCompensator`, which synchronizes the 1000 Hz e-nose conductance with the 20 Hz PLIF concentration ground truth.
+1. **Data Loading & Alignment** — Load combined e-nose/PLIF CSV data and estimate the dead time between the 1000 Hz e-nose conductance and the measured 20 Hz PLIF frames using `DeadTimeCompensator`. The dead time is resolved on the e-nose time grid; the e-nose signals are then sampled at each PLIF frame time plus the dead time.
 
 2. **Concentration Estimation** — Three methods are available:
    - **Raw conductance** — Direct resistance-to-conductance conversion
    - **Derivative-based** — Time derivative of conductance (smoothed with Savitzky-Golay filter)
    - **Supervised deconvolution** — A learned model that deconvolves the sensor dynamics
 
-3. **Evaluation** — Metrics (correlation, RMSE, etc.) are computed and comparison plots are generated showing ground-truth PLIF against each estimation method.
+3. **Evaluation** — Metrics (correlation, RMSE, etc.) are computed at the measured PLIF frames and comparison plots are generated showing PLIF against each estimation method.
 
 ## Scripts Reference
 
@@ -138,6 +168,8 @@ The concentration estimation workflow consists of three stages:
 | `f3d_mox_plif.py` | Combined MOx/PLIF visualization |
 | `f4_c_estimation.py` | **Main concentration estimation pipeline** |
 | `t3_dynamicrangeretentionscore.py` | Dynamic range and retention score computation |
+| `technical_validation.py` | Technical-validation tables for all experiments (saturation, heater temperature, environment, synchronisation, PLIF bandwidth, response time, ROI geometry and sensitivity) |
+| `make_combined_v2.py` | Convert combined CSVs from the earlier layout to the current one |
 
 ## Output
 

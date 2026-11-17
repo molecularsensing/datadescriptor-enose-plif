@@ -10,6 +10,18 @@ shared across analysis scripts:
 - detecting PLIF, e-nose, and numeric columns;
 - resampling to native PLIF, interpolated, or common-rate time bases;
 - exporting resampled data back to CSV.
+
+Column layout (v2)
+------------------
+- `plif_A` .. `plif_D`: measured PLIF, present only on rows where a PLIF image
+  was acquired (`plif_image` is True), NaN otherwise;
+- `plif_A_interp` .. `plif_D_interp`: the measured values interpolated (PCHIP)
+  to the 1 kHz e-nose timestamps. These are not measurements;
+- `R_gas_valid_1` .. `R_gas_valid_8`: False where the reading is saturated
+  (`R_gas` is exactly 0).
+
+Files in the earlier layout (v1: dense `plif_A` .. `plif_D`, no validity
+columns) are converted to this layout on load.
 """
 
 from __future__ import annotations
@@ -20,6 +32,7 @@ from typing import Literal
 
 import numpy as np
 import pandas as pd
+from scipy.signal import firwin
 
 # Import constants from utils.constants
 sys.path.append(str(Path(__file__).resolve().parent.parent))
@@ -34,6 +47,9 @@ except ImportError:
 # ---------------------------------------------------------------------
 
 SamplingStrategy = Literal["interpolated", "plif_native", "common_rate"]
+
+PLIF_INTERP_SUFFIX = "_interp"
+R_GAS_VALID_PREFIX = "R_gas_valid_"
 
 
 # ---------------------------------------------------------------------
@@ -68,12 +84,44 @@ def get_combined_csv_path(
     return combined_root.joinpath(f"enose_plif_r{exp_id}.csv")
 
 
+def _ensure_v2_layout(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Internal: Convert a v1-layout DataFrame to the v2 column layout.
+
+    DataFrames that already have the v2 layout are returned unchanged.
+    """
+    zone_cols = [
+        col for col in df.columns
+        if col.startswith("plif_") and col != "plif_image"
+        and not col.endswith(PLIF_INTERP_SUFFIX)
+    ]
+    r_gas_cols = [
+        col for col in df.columns
+        if col.startswith("R_gas_") and not col.startswith(R_GAS_VALID_PREFIX)
+    ]
+
+    for col in zone_cols:
+        if f"{col}{PLIF_INTERP_SUFFIX}" not in df.columns:
+            df[f"{col}{PLIF_INTERP_SUFFIX}"] = df[col]
+            df[col] = df[col].where(df["plif_image"].astype(bool))
+
+    for col in r_gas_cols:
+        valid_col = f"{R_GAS_VALID_PREFIX}{col.removeprefix('R_gas_')}"
+        if valid_col not in df.columns:
+            df[valid_col] = df[col] != 0
+
+    return df
+
+
 def _load_raw_csv(
     exp_id: str | int,
     combined_root: Path = SSD_COMBINED_FOLDER,
+    mask_saturated: bool = False,
 ) -> pd.DataFrame:
     """
     Internal: Load raw CSV without any sampling or processing.
+
+    If `mask_saturated` is True, saturated resistance readings are set to NaN.
     """
     csv_path = get_combined_csv_path(exp_id, combined_root=combined_root)
 
@@ -95,6 +143,12 @@ def _load_raw_csv(
             )
 
     df = df.sort_values("time_s").reset_index(drop=True)
+    df = _ensure_v2_layout(df)
+
+    if mask_saturated:
+        for col in get_r_gas_valid_columns(df):
+            r_gas_col = f"R_gas_{col.removeprefix(R_GAS_VALID_PREFIX)}"
+            df[r_gas_col] = df[r_gas_col].where(df[col].astype(bool))
 
     return df
 
@@ -106,6 +160,7 @@ def load_combined_csv(
     target_rate_hz: float = 100.0,
     plif_source: Literal["native", "interpolated"] = "interpolated",
     smoothing_window_s: float | None = None,
+    mask_saturated: bool = False,
 ) -> pd.DataFrame:
     """
     Load the combined e-nose/PLIF CSV for one experiment.
@@ -128,6 +183,9 @@ def load_combined_csv(
         Used only when sampling="common_rate".
     smoothing_window_s:
         Optional centred zero-lag smoothing window for downsampling.
+    mask_saturated:
+        If True, saturated resistance readings (`R_gas_valid_*` is False) are
+        set to NaN.
     """
     # If sampling is specified, use the full load_combined_dataset pipeline
     if sampling is not None:
@@ -143,9 +201,10 @@ def load_combined_csv(
             target_rate_hz=target_rate_hz,
             plif_source=plif_source,
             smoothing_window_s=smoothing_window_s,
+            mask_saturated=mask_saturated,
         )
 
-    return _load_raw_csv(exp_id, combined_root=combined_root)
+    return _load_raw_csv(exp_id, combined_root=combined_root, mask_saturated=mask_saturated)
 
 
 # ---------------------------------------------------------------------
@@ -154,15 +213,33 @@ def load_combined_csv(
 
 def get_plif_columns(df: pd.DataFrame) -> list[str]:
     """
-    Return PLIF concentration columns.
+    Return the measured PLIF concentration columns.
 
     By convention these are expected to start with `plif_`, excluding helper
-    columns such as `plif_image`.
+    columns such as `plif_image` and the interpolated `plif_*_interp` columns.
     """
     return [
         col for col in df.columns
         if col.startswith("plif_") and col != "plif_image"
+        and not col.endswith(PLIF_INTERP_SUFFIX)
     ]
+
+
+def get_plif_interp_columns(df: pd.DataFrame) -> list[str]:
+    """
+    Return the interpolated (1 kHz) PLIF columns, `plif_*_interp`.
+    """
+    return [
+        col for col in df.columns
+        if col.startswith("plif_") and col.endswith(PLIF_INTERP_SUFFIX)
+    ]
+
+
+def get_r_gas_valid_columns(df: pd.DataFrame) -> list[str]:
+    """
+    Return the saturation-mask columns, `R_gas_valid_*`.
+    """
+    return [col for col in df.columns if col.startswith(R_GAS_VALID_PREFIX)]
 
 
 def get_enose_columns(df: pd.DataFrame) -> list[str]:
@@ -180,6 +257,7 @@ def get_enose_columns(df: pd.DataFrame) -> list[str]:
 
     excluded_prefixes = (
         "plif_",
+        R_GAS_VALID_PREFIX,
     )
 
     return [
@@ -202,7 +280,9 @@ def get_numeric_data_columns(df: pd.DataFrame) -> list[str]:
 
     return [
         col for col in df.columns
-        if col not in excluded and pd.api.types.is_numeric_dtype(df[col])
+        if col not in excluded
+        and not col.startswith(R_GAS_VALID_PREFIX)
+        and pd.api.types.is_numeric_dtype(df[col])
     ]
 
 
@@ -299,14 +379,16 @@ def select_plif_native_rows(df: pd.DataFrame) -> pd.DataFrame:
     """
     Select rows corresponding to original PLIF image acquisitions.
 
-    Requires a Boolean `plif_image` column.
+    Requires a Boolean `plif_image` column. The interpolated `plif_*_interp`
+    columns are dropped, since they equal the measured values on these rows.
     """
     if "plif_image" not in df.columns:
         raise KeyError(
             "Cannot select native PLIF rows because column `plif_image` is absent."
         )
 
-    return df[df["plif_image"].astype(bool)].copy().reset_index(drop=True)
+    native = df[df["plif_image"].astype(bool)].copy().reset_index(drop=True)
+    return native.drop(columns=get_plif_interp_columns(native))
 
 
 def make_target_timebase(
@@ -335,7 +417,7 @@ def zero_lag_smooth_for_downsampling(
     smoothing_window_s: float | None = None,
 ) -> np.ndarray:
     """
-    Apply a centred, zero-lag rolling mean before downsampling.
+    Apply a zero-lag anti-aliasing low-pass filter before downsampling.
 
     Parameters
     ----------
@@ -346,13 +428,17 @@ def zero_lag_smooth_for_downsampling(
     target_rate_hz:
         Requested target sampling frequency.
     smoothing_window_s:
-        Optional smoothing window in seconds. If None, a default window of one
-        target-sampling interval is used.
+        If None (default), a linear-phase FIR low-pass filter with a cutoff at
+        0.8 times the target Nyquist frequency is applied symmetrically, so
+        that content above the target Nyquist frequency is attenuated without
+        introducing a delay. If given, a centred rolling mean of this length
+        (in seconds) is applied instead.
 
     Returns
     -------
     np.ndarray
-        Smoothed signal with the same length as `values`.
+        Filtered signal with the same length as `values`. Samples within half
+        a filter length of a NaN are NaN.
     """
     values = np.asarray(values, dtype=float)
 
@@ -360,7 +446,14 @@ def zero_lag_smooth_for_downsampling(
         return values
 
     if smoothing_window_s is None:
-        smoothing_window_s = 1.0 / target_rate_hz
+        ratio = source_rate_hz / target_rate_hz
+        numtaps = 2 * int(np.ceil(8 * ratio)) + 1
+        if numtaps >= len(values):
+            return values
+        taps = firwin(numtaps, cutoff=0.4 * target_rate_hz, fs=source_rate_hz)
+        half = numtaps // 2
+        padded = np.pad(values, half, mode="reflect")
+        return np.convolve(padded, taps, mode="valid")
 
     window_samples = int(round(smoothing_window_s * source_rate_hz))
     window_samples = max(window_samples, 1)
@@ -427,14 +520,18 @@ def resample_combined_to_common_rate(
     target_rate_hz:
         Desired output rate, e.g. 100 Hz.
     plif_source:
-        Source used for PLIF resampling.
+        Source used for PLIF resampling: "native" resamples the measured PLIF
+        frames, "interpolated" the 1 kHz `plif_*_interp` columns.
     smoothing_window_s:
         Centred smoothing window used before downsampling high-rate channels.
+        If None, an anti-aliasing FIR low-pass filter is used instead.
 
     Returns
     -------
     pd.DataFrame
         Resampled DataFrame with regular `time_s` and timedelta `timestamp`.
+        The resampled PLIF is returned in the `plif_*_interp` columns, since
+        its values do not coincide with measured PLIF frames.
     """
     if plif_source not in {"native", "interpolated"}:
         raise ValueError("plif_source must be either 'native' or 'interpolated'.")
@@ -485,14 +582,14 @@ def resample_combined_to_common_rate(
                 smoothing_window_s=smoothing_window_s,
             )
 
-            out[col] = interpolate_to_timebase(
+            out[f"{col}{PLIF_INTERP_SUFFIX}"] = interpolate_to_timebase(
                 plif_time,
                 values,
                 target_time_s,
             )
 
     else:
-        for col in plif_cols:
+        for col in get_plif_interp_columns(df):
             values = zero_lag_smooth_for_downsampling(
                 df[col].to_numpy(),
                 source_rate_hz=full_source_rate_hz,
@@ -519,6 +616,7 @@ def load_combined_dataset(
     target_rate_hz: float = 100.0,
     plif_source: Literal["native", "interpolated"] = "native",
     smoothing_window_s: float | None = None,
+    mask_saturated: bool = False,
 ) -> pd.DataFrame:
     """
     Load the combined e-nose/PLIF dataset using a selected sampling strategy.
@@ -526,7 +624,9 @@ def load_combined_dataset(
     Parameters
     ----------
     strategy:
-        - "interpolated": Return the full combined CSV as provided.
+        - "interpolated": Return the full combined CSV as provided (1 kHz),
+          with measured PLIF in `plif_*` (NaN between PLIF frames) and
+          interpolated PLIF in `plif_*_interp`.
         - "plif_native": Return only rows corresponding to original PLIF images.
         - "common_rate": Return a regular, user-defined common time base.
     target_rate_hz:
@@ -535,8 +635,10 @@ def load_combined_dataset(
         Used only for strategy="common_rate".
     smoothing_window_s:
         Optional centred zero-lag smoothing window for downsampling.
+    mask_saturated:
+        If True, saturated resistance readings are set to NaN.
     """
-    df = _load_raw_csv(exp_id)
+    df = _load_raw_csv(exp_id, mask_saturated=mask_saturated)
 
     if strategy == "interpolated":
         out = df.copy()

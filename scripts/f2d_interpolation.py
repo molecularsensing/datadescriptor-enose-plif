@@ -33,7 +33,7 @@ def plot_interpolation(exp_ids: list[str] | None = None, window: tuple[float, fl
             )
             ax.scatter(
                 enose_plif_df["time_s"],
-                enose_plif_df[f"plif_{zone}"],
+                enose_plif_df[f"plif_{zone}_interp"],
                 c="k",
                 s=5,
                 label="Interpolated (1kHz)",

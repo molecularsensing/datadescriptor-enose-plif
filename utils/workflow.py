@@ -23,30 +23,33 @@ import pandas as pd
 
 # Import constants from utils.constants
 sys.path.append(str(Path(__file__).resolve().parent.parent))
-from utils.constants import ENOSE_ZONE_SENSOR, LOCATIONS, PLIF_USEFUL_BOUNDS
+from utils.constants import ENOSE_ZONE_SENSOR, LOCATIONS, PLIF_USEFUL_BOUNDS, PLIF_SAMPLING_FREQUENCY
+from utils.combined_io import zero_lag_smooth_for_downsampling
 from utils.misc import metrics
 
 
 def prepare_zone_signals(
     df: pd.DataFrame,
     zone: str,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, str]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, str]:
     """
-    Extract time, PLIF concentration, and e-nose conductance for one PLIF zone.
+    Extract time, measured PLIF frames, and e-nose conductance for one PLIF zone.
 
     The sensor mapping is taken from ENOSE_ZONE_SENSOR.
 
     Parameters
     ----------
     df:
-        Combined e-nose/PLIF DataFrame.
+        Combined e-nose/PLIF DataFrame on the full 1 kHz time base.
     zone:
         Zone identifier (e.g., 'A', 'B', 'C', 'D').
 
     Returns
     -------
-    tuple[np.ndarray, np.ndarray, np.ndarray, str]
-        time_s, plif, conductance, sensor_col.
+    tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, str]
+        time_s, frame_mask, plif_frames, conductance, sensor_col. `frame_mask`
+        marks the rows of `time_s` where a PLIF image was acquired and
+        `plif_frames` holds one measured concentration per PLIF frame.
     """
     plif_col = f"plif_{zone}"
     if plif_col not in df.columns:
@@ -60,12 +63,13 @@ def prepare_zone_signals(
         raise KeyError(f"Missing e-nose sensor column: {sensor_col}")
 
     time_s = df["time_s"].to_numpy(dtype=float)
-    plif = df[plif_col].to_numpy(dtype=float)
+    frame_mask = df["plif_image"].to_numpy(dtype=bool)
+    plif_frames = df.loc[frame_mask, plif_col].to_numpy(dtype=float)
 
     # Conductance is the inverse of resistance-like sensor signal.
     conductance = 1.0 / df[sensor_col].to_numpy(dtype=float)
 
-    return time_s, plif, conductance, sensor_col
+    return time_s, frame_mask, plif_frames, conductance, sensor_col
 
 
 def default_derivative_transform(conductance: np.ndarray, dt: float) -> np.ndarray:
@@ -112,31 +116,35 @@ def align_signals(
     aligner: object,
     time_s: np.ndarray,
     conductance: np.ndarray,
-    plif: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    frame_mask: np.ndarray,
+    plif_frames: np.ndarray,
+) -> object:
     """
-    Align conductance and PLIF using an object with a fit_transform method.
+    Fit the dead time between conductance and the measured PLIF frames.
 
     Parameters
     ----------
     aligner:
-        Object providing a fit_transform(time, signal, target) method.
+        Object providing fit_frames(time, signal, frame_mask, target) and
+        transform_frames(signal) methods.
     time_s:
-        Time array.
+        E-nose time array.
     conductance:
-        Conductance signal.
-    plif:
-        PLIF concentration signal.
+        Conductance signal on `time_s`.
+    frame_mask:
+        Boolean mask on `time_s`, True where a PLIF image was acquired.
+    plif_frames:
+        Measured PLIF concentration, one value per frame.
 
     Returns
     -------
-    tuple[np.ndarray, np.ndarray, np.ndarray]
-        Aligned time, conductance, and PLIF arrays.
+    object
+        The fitted aligner.
     """
-    if not hasattr(aligner, "fit_transform"):
-        raise TypeError("aligner must provide a fit_transform(time, signal, target) method.")
+    if not hasattr(aligner, "fit_frames"):
+        raise TypeError("aligner must provide a fit_frames(time, signal, frame_mask, target) method.")
 
-    return aligner.fit_transform(time_s, conductance, plif)
+    return aligner.fit_frames(time_s, conductance, frame_mask, plif_frames)
 
 
 def run_deconvolution(
@@ -355,7 +363,8 @@ def process_zone(
     zone:
         Zone identifier.
     df:
-        Combined e-nose/PLIF DataFrame (already loaded with desired sampling strategy).
+        Combined e-nose/PLIF DataFrame on the full 1 kHz time base
+        (strategy "interpolated").
     sampling_strategy:
         Sampling strategy used (for logging).
     alignment_factory:
@@ -383,7 +392,7 @@ def process_zone(
     exp_id_norm = exp_id_norm[1:] if exp_id_norm.startswith("r") else exp_id_norm
     loc_key = LOCATIONS[f"r{exp_id_norm}"]
 
-    time_s, plif, conductance, sensor_col = prepare_zone_signals(df, zone)
+    time_s, frame_mask, plif_frames, conductance, sensor_col = prepare_zone_signals(df, zone)
 
     print(f"\nExperiment r{exp_id_norm}, location {loc_key}, zone {zone}")
     print("-" * 70)
@@ -399,18 +408,25 @@ def process_zone(
     if deconv_factory is None:
         deconv_factory = lambda dt: SupervisedDeconvolution(delta_t=dt)
 
-    aligner = alignment_factory()
-    time_aligned, conductance_aligned, plif_aligned = align_signals(
-        aligner, time_s, conductance, plif
+    dt = float(np.median(np.diff(time_s)))
+    if not np.isfinite(dt) or dt <= 0:
+        raise ValueError("Invalid e-nose time step.")
+
+    # E-nose processing at its native rate: derivative, and low-pass before
+    # sampling at the PLIF frame rate.
+    derivative = derivative_transform(conductance, dt)
+    conductance_lowpass = zero_lag_smooth_for_downsampling(
+        conductance, source_rate_hz=1.0 / dt, target_rate_hz=PLIF_SAMPLING_FREQUENCY
     )
 
-    dt = float(np.median(np.diff(time_aligned)))
-    if not np.isfinite(dt) or dt <= 0:
-        raise ValueError("Invalid time step after alignment.")
+    # Dead time from the measured PLIF frames, then sample at frame time + dead time.
+    aligner = align_signals(alignment_factory(), time_s, conductance, frame_mask, plif_frames)
+    time_aligned = time_s[frame_mask][aligner.frame_keep]
+    plif_aligned = plif_frames[aligner.frame_keep]
+    conductance_aligned = aligner.transform_frames(conductance_lowpass)
+    deriv_est = aligner.transform_frames(derivative)
 
-    deriv_est = derivative_transform(conductance_aligned, dt)
-
-    deconv = deconv_factory(dt)
+    deconv = deconv_factory(1.0 / PLIF_SAMPLING_FREQUENCY)
     deconv_est = run_deconvolution(deconv, conductance_aligned, plif_aligned)
 
     safe_metrics(plif_aligned, conductance_aligned, "Raw conductance vs PLIF")

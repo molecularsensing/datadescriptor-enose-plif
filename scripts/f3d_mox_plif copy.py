@@ -32,7 +32,8 @@ def _plot_plif_enose(exp_id: str, loc_key: str, df: pd.DataFrame) -> None:
         color = COLORS[zone]
         sensor_col = ENOSE_ZONE_SENSOR[zone]
         target_axes = ax_ab if zone in ["A", "B"] else ax_cd
-        target_axes[0].plot(df["time_s"], df[f"plif_{zone}"], c=color, label=f"Zone {zone}")
+        plif = df[df["plif_image"]]
+        target_axes[0].plot(plif["time_s"], plif[f"plif_{zone}"], c=color, label=f"Zone {zone}")
         target_axes[1].plot(df["time_s"], 1e6 * 1 / df[sensor_col], c=color, label=SENSOR_LABELS[zone])
         target_axes[0].set_ylim([0, 0.07])
         target_axes[1].set_xlim([196, 210])

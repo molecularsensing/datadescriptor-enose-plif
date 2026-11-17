@@ -106,6 +106,69 @@ class DeadTimeCompensator:
                  concentration: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         return self.fit(time_s, conductance, concentration).transform()
 
+    def fit_frames(self, time_s: np.ndarray, conductance: np.ndarray,
+                   frame_mask: np.ndarray, concentration_frames: np.ndarray,
+                   max_dead_time_s: float = 0.5) -> 'DeadTimeCompensator':
+        """
+        Estimate the dead time against measured PLIF frames only.
+
+        The filtered derivative of the conductance is sampled at each PLIF frame
+        time plus a candidate dead time and correlated with the measured frame
+        concentrations. Candidate dead times are spaced by the e-nose sampling
+        interval, so the estimate is not limited by the PLIF frame interval and
+        does not require interpolated PLIF values.
+
+        Args:
+            time_s (np.ndarray): E-nose time vector in seconds.
+            conductance (np.ndarray): Conductance signal G(t) on `time_s`.
+            frame_mask (np.ndarray): Boolean mask on `time_s`, True where a PLIF
+                image was acquired.
+            concentration_frames (np.ndarray): Measured concentration, one value
+                per PLIF frame.
+            max_dead_time_s (float): Largest dead time considered, in seconds.
+
+        Returns:
+            self: Returns the fitted compensator instance.
+        """
+        frame_idx = np.flatnonzero(np.asarray(frame_mask, dtype=bool))
+        concentration_frames = np.asarray(concentration_frames, dtype=float)
+        if len(frame_idx) != len(concentration_frames):
+            raise ValueError("concentration_frames must have one value per PLIF frame")
+
+        dt = np.mean(np.diff(time_s))
+        conductance_derivative = np.gradient(conductance, dt)
+        conductance_derivative = savgol_filter(conductance_derivative, 100, 5)
+
+        max_lag_points = int(round(max_dead_time_s / dt))
+        usable = frame_idx + max_lag_points < len(time_s)
+        correlations = np.array([
+            pearsonr(conductance_derivative[frame_idx[usable] + lag],
+                     concentration_frames[usable])[0]
+            for lag in range(max_lag_points + 1)
+        ])
+
+        self.lag_points = int(np.argmax(correlations))
+        self.dead_time = self.lag_points * dt
+        self.original_correlation = correlations[0]
+        self.optimized_correlation = correlations[self.lag_points]
+
+        self.time_s = time_s.copy()
+        self.frame_idx = frame_idx
+        self.frame_keep = frame_idx + self.lag_points < len(time_s)
+        self._is_fitted = True
+        return self
+
+    def transform_frames(self, signal: np.ndarray) -> np.ndarray:
+        """
+        Sample an e-nose signal at the PLIF frame times plus the dead time.
+
+        Frames whose shifted sample lies beyond the end of the recording are
+        dropped; `frame_keep` marks the frames that are returned.
+        """
+        if not self._is_fitted:
+            raise RuntimeError("Must call fit_frames() before transform_frames()")
+        return np.asarray(signal)[self.frame_idx[self.frame_keep] + self.lag_points]
+
     
     def get_correlation_improvement(self) -> Tuple[float, float]:
         """

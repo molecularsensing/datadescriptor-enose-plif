@@ -104,7 +104,7 @@ def plot_sampling_strategies(
 
     ax.plot(
         raw["time_s"],
-        raw[plif_col],
+        raw[f"{plif_col}_interp"],
         linewidth=1.0,
         label="Interpolated PLIF on full CSV time base",
         zorder=3,
@@ -112,7 +112,7 @@ def plot_sampling_strategies(
 
     ax.plot(
         common["time_s"],
-        common[plif_col],
+        common[f"{plif_col}_interp"],
         linewidth=1.5,
         label=f"PLIF resampled to {target_rate_hz:g} Hz",
         zorder=5,
@@ -194,7 +194,7 @@ def plot_common_rate_effect(
 
     ax.plot(
         raw["time_s"],
-        raw[plif_col],
+        raw[f"{plif_col}_interp"],
         linewidth=1.0,
         alpha=0.6,
         label="Interpolated full CSV",
@@ -210,7 +210,7 @@ def plot_common_rate_effect(
 
         ax.plot(
             common["time_s"],
-            common[plif_col],
+            common[f"{plif_col}_interp"],
             linewidth=1.2,
             label=f"Common rate {rate:g} Hz",
         )
