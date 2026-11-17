@@ -46,14 +46,14 @@ PLIF_USEFUL_BOUNDS = {
 
 # In which PLIF area, each MOX gas sensor belongs to
 MOX_PLIF_BOUND_RELATIONSHIPS = {
-    '1': 'A',
-    '2': 'A',
-    '3': 'A',
-    '4': 'C',
-    '5': 'B',
-    '6': 'B',
-    '7': 'B',
-    '8': 'D',
+    '1': 'B',
+    '2': 'B',
+    '3': 'B',
+    '4': 'D',
+    '5': 'A',
+    '6': 'A',
+    '7': 'A',
+    '8': 'C',
 }
 
 LOCATIONS = {
@@ -86,10 +86,10 @@ SPEEDS = {
 
 
 ENOSE_ZONE_SENSOR = {
-    'A': f'R_gas_{1}',
-    'B': f'R_gas_{5}',
-    'C': f'R_gas_{4}',
-    'D': f'R_gas_{8}',
+    'A': f'R_gas_{5}',
+    'B': f'R_gas_{1}',
+    'C': f'R_gas_{8}',
+    'D': f'R_gas_{4}',
 }
 
 # Sensing area for each MOX sensor

@@ -36,7 +36,7 @@ def _add_reference_overlays(ax: plt.Axes, loc_key: str) -> None:
         alpha=0.3,
     )
     ax.add_patch(rect)
-    ax.text(xmin + 165, ymax + 45, loc_key[1:], fontsize=10, fontweight="bold", color="lightgreen")
+    ax.text(xmin + 165, ymin - 45, loc_key[1:], fontsize=10, fontweight="bold", color="lightgreen")
 
     for zone, (z_ymin, z_ymax, z_xmin, z_xmax) in PLIF_USEFUL_BOUNDS[loc_key].items():
         z_width, z_height = z_xmax - z_xmin, z_ymax - z_ymin
@@ -63,7 +63,7 @@ def _set_mm_ticks(ax: plt.Axes, data: np.ndarray, px_mm: float) -> None:
     xticks_cm = -1 * np.arange(0, 31, 10) + x_cm
     xticklabels = np.arange(0, 301, 100)
     yticks_cm = -1 * np.arange(-30 / 2, 30 / 2 + 0.1, 5) + y_cm / 2
-    yticklabels = np.arange(-150, 151, 50)
+    yticklabels = np.arange(150, -151, -50)
 
     xticks_px = xticks_cm * x_pixel_per_cm
     yticks_px = yticks_cm * y_pixel_per_cm
@@ -105,9 +105,9 @@ def plot_heatmap(exp_id: str = "r56", frame_idx: int = 1600, save: bool = True) 
     px_mm = _load_px_mm("LC")
     _set_mm_ticks(ax, frame, px_mm)
 
-    # Rotate the entire frame to match the physical orientation.
+    # Rotate the entire frame by 180 degrees to match the physical orientation
+    # (origin="lower" already reverses the rows, so only x is reversed here).
     ax.set_xlim(ax.get_xlim()[::-1])
-    ax.set_ylim(ax.get_ylim()[::-1])
 
     if save:
         export_figure(fig, base_name="heatmap", dpi=600, bbox_inches="tight")

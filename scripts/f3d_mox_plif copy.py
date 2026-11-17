@@ -14,7 +14,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 from utils.constants import ENOSE_ZONE_SENSOR, LOCATIONS, PLIF_USEFUL_BOUNDS, SSD_COMBINED_FOLDER, SPEEDS
 
 COLORS = {"A": "#fc9272", "B": "#de2d26", "C": "#bcbddc", "D": "#756bb1"}
-SENSOR_LABELS = {"A": "Sensor 1", "B": "Sensor 5", "C": "Sensor 4", "D": "Sensor 8"}
+SENSOR_LABELS = {"A": "Sensor 5", "B": "Sensor 1", "C": "Sensor 8", "D": "Sensor 4"}
 DEFAULT_EXPERIMENTS = ["56", "57", "58", "59", "60", "61", "70", "71", "75", "76"]
 
 

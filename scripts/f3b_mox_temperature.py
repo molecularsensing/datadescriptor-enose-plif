@@ -13,7 +13,7 @@ from utils.constants import LOCATIONS
 from utils.combined_io import load_combined_csv
 
 COLORS = {"A": "#fc9272", "B": "#de2d26", "C": "#bcbddc", "D": "#756bb1"}
-SENSOR_LABELS = {"A": "Sensor 1", "B": "Sensor 5", "C": "Sensor 4", "D": "Sensor 8"}
+SENSOR_LABELS = {"A": "Sensor 5", "B": "Sensor 1", "C": "Sensor 8", "D": "Sensor 4"}
 
 
 def _load_enose_plif(exp_id: str) -> pd.DataFrame:
@@ -22,11 +22,11 @@ def _load_enose_plif(exp_id: str) -> pd.DataFrame:
 
 
 def _plot_temperatures(exp_id: str, loc_key: str, df: pd.DataFrame) -> None:
-    """Plot heater temperatures for B and D zones with mean and ±std bands."""
+    """Plot heater temperatures of sensors 4 and 8 with mean and ±std bands."""
     fig, ax = plt.subplots(nrows=2, sharex=True, sharey=True, figsize=(5.5, 4.5))
-    for i, zone in enumerate(["B", "D"]):
-        mean, std = float(np.mean(df[f"T_heat_{i+1}"])), float(np.std(df[f"T_heat_{i+1}"]))
-        ax[i].plot(df["time_s"], df[f"T_heat_{i+1}"], c=COLORS[zone], label=SENSOR_LABELS[zone])
+    for i, (zone, sensor) in enumerate([("D", 4), ("C", 8)]):
+        mean, std = float(np.mean(df[f"T_heat_{sensor}"])), float(np.std(df[f"T_heat_{sensor}"]))
+        ax[i].plot(df["time_s"], df[f"T_heat_{sensor}"], c=COLORS[zone], label=SENSOR_LABELS[zone])
         ax[i].axhline(mean, color="k")
         ax[i].axhline(mean + std, color="k", linestyle="--")
         ax[i].axhline(mean - std, color="k", linestyle="--")

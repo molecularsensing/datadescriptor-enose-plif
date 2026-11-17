@@ -42,7 +42,7 @@ def _set_mm_ticks(ax: plt.Axes, data: np.ndarray, px_mm: float) -> None:
     xticks_cm = -1 * np.arange(0, 31, 10) + x_cm
     xticklabels = np.arange(0, 301, 100)
     yticks_cm = -1 * np.arange(-30 / 2, 30 / 2 + 0.1, 5) + y_cm / 2
-    yticklabels = np.arange(-150, 151, 50)
+    yticklabels = np.arange(150, -151, -50)
 
     xticks_px = xticks_cm * x_pixel_per_cm
     yticks_px = yticks_cm * y_pixel_per_cm
@@ -82,7 +82,6 @@ def _plot_full_frame(loc_key: str, data: np.ndarray, vmin: int = 350, vmax: int 
     px_mm = load_px_per_mm(loc_key)
     _set_mm_ticks(ax, data, px_mm)
     ax.set_xlim(ax.get_xlim()[::-1])
-    ax.set_ylim(ax.get_ylim()[::-1])
 
     export_figure(fig, base_name=f"enose_position_{loc_key}", dpi=600, bbox_inches="tight")
     plt.show()
@@ -115,7 +114,6 @@ def _plot_inset(loc_key: str, data: np.ndarray, vmin: int = 350, vmax: int = 540
         ax.add_patch(rect)
 
     ax.set_xlim(ax.get_xlim()[::-1])
-    ax.set_ylim(ax.get_ylim()[::-1])
 
     export_figure(fig, base_name=f"enose_position_{loc_key}_inset", dpi=600, bbox_inches="tight")
     plt.tight_layout()

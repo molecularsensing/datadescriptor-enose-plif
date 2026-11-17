@@ -16,7 +16,7 @@ from utils.combined_io import load_combined_csv
 from utils.plotting import export_figure
 
 COLORS = {"A": "#fc9272", "B": "#de2d26", "C": "#bcbddc", "D": "#756bb1"}
-SENSOR_LABELS = {"A": "Sensor 1", "B": "Sensor 5", "C": "Sensor 4", "D": "Sensor 8"}
+SENSOR_LABELS = {"A": "Sensor 5", "B": "Sensor 1", "C": "Sensor 8", "D": "Sensor 4"}
 
 
 def _plot_plif_enose_pair(fig, ax, exp_id: str, loc_key: str, df, ab_cd: str) -> None:
@@ -47,14 +47,14 @@ def _plot_plif_enose_pair(fig, ax, exp_id: str, loc_key: str, df, ab_cd: str) ->
 
 
 def _plot_temperatures_pair(fig, ax, exp_id: str, loc_key: str, df) -> None:
-    """Plot heater temperatures for B and D zones."""
-    for i, zone in enumerate(["B", "D"]):
-        mean, std = np.mean(df[f"T_heat_{i+1}"]), np.std(df[f"T_heat_{i+1}"])
-        ax[i].plot(df["time_s"], df[f"T_heat_{i+1}"], c=COLORS[zone], label=SENSOR_LABELS[zone])
+    """Plot heater temperatures of sensors 4 and 8."""
+    for i, (zone, sensor) in enumerate([("D", 4), ("C", 8)]):
+        mean, std = np.mean(df[f"T_heat_{sensor}"]), np.std(df[f"T_heat_{sensor}"])
+        ax[i].plot(df["time_s"], df[f"T_heat_{sensor}"], c=COLORS[zone], label=SENSOR_LABELS[zone])
         ax[i].axhline(mean, color="k")
         ax[i].axhline(mean + std, color="k", linestyle="--")
         ax[i].axhline(mean - std, color="k", linestyle="--")
-        print(i + 1, np.mean(df[f"T_heat_{i+1}"]), np.std(df[f"T_heat_{i+1}"]))
+        print(sensor, mean, std)
         ax[i].legend(loc="upper left")
         ax[i].spines[["top", "right"]].set_visible(False)
         ax[i].set_ylabel("Temperature (°C)")
