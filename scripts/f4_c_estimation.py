@@ -21,6 +21,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.signal import savgol_filter
+from scipy.stats import spearmanr
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 from src.deadtime_compensation import DeadTimeCompensator
@@ -92,10 +93,10 @@ def cross_validated_deconvolution(model_factory, y: np.ndarray, u: np.ndarray, t
     return estimate
 
 
-def pearson_r(a: np.ndarray, b: np.ndarray) -> float:
-    """Pearson r over the samples where both signals are finite."""
+def correlations(a: np.ndarray, b: np.ndarray) -> tuple[float, float]:
+    """Spearman and Pearson correlation over the samples where both signals are finite."""
     finite = np.isfinite(a) & np.isfinite(b)
-    return float(np.corrcoef(a[finite], b[finite])[0, 1])
+    return float(spearmanr(a[finite], b[finite])[0]), float(np.corrcoef(a[finite], b[finite])[0, 1])
 
 
 def estimate_zone(df: pd.DataFrame, zone: str, alignment_factory=default_alignment,
@@ -140,12 +141,10 @@ def estimate_zone(df: pd.DataFrame, zone: str, alignment_factory=default_alignme
         lambda: deconv_factory(dt), conductance_lowpass_shifted, plif_interp, time_s,
     )
 
-    scores = {
-        "r_raw": pearson_r(plif, conductance_lowpass_shifted[frame_idx]),
-        "r_ddt": pearson_r(plif, derivative_shifted[frame_idx]),
-        "r_frame_rate": pearson_r(plif, frame_rate),
-        "r_full_rate": pearson_r(plif, full_rate[frame_idx]),
-    }
+    scores = {}
+    for name, estimate in (("raw", conductance_lowpass_shifted[frame_idx]), ("ddt", derivative_shifted[frame_idx]),
+                           ("frame_rate", frame_rate), ("full_rate", full_rate[frame_idx])):
+        scores[f"spearman_{name}"], scores[f"pearson_{name}"] = correlations(plif, estimate)
     return dict(
         sensor_col=sensor_col, dead_time_s=aligner.get_dead_time(), n_frames=len(frame_idx),
         time_s=time_s, frame_idx=frame_idx, plif=plif, conductance=conductance_shifted,
@@ -243,8 +242,12 @@ def save_scores(exp_ids: list[str] | None = None) -> pd.DataFrame:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     scores.to_csv(OUT_DIR / "scores.csv", index=False)
     scores["device"] = np.where(scores["zone"].isin(["A", "B"]), "MiCS-6814", "CCS801")
-    summary = (scores.groupby(["device", "location", "speed_m_s"])
-               [["r_raw", "r_ddt", "r_frame_rate", "r_full_rate"]].mean().round(2))
+    means = scores.groupby(["device", "location", "speed_m_s"]).mean(numeric_only=True)
+    # One column per method, "Spearman / Pearson"
+    summary = pd.DataFrame({
+        name: means[f"spearman_{name}"].map("{:.2f}".format) + " / " + means[f"pearson_{name}"].map("{:.2f}".format)
+        for name in ("raw", "ddt", "frame_rate", "full_rate")
+    })
     summary.to_csv(OUT_DIR / "scores_summary.csv")
     print(summary)
     return scores
