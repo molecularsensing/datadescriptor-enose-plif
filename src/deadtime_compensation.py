@@ -141,11 +141,13 @@ class DeadTimeCompensator:
 
         max_lag_points = int(round(max_dead_time_s / dt))
         usable = frame_idx + max_lag_points < len(time_s)
-        correlations = np.array([
-            pearsonr(conductance_derivative[frame_idx[usable] + lag],
-                     concentration_frames[usable])[0]
-            for lag in range(max_lag_points + 1)
-        ])
+        def _corr(lag):
+            x = conductance_derivative[frame_idx[usable] + lag]
+            y = concentration_frames[usable]
+            finite = np.isfinite(x) & np.isfinite(y)  # skips saturated samples
+            return pearsonr(x[finite], y[finite])[0]
+
+        correlations = np.array([_corr(lag) for lag in range(max_lag_points + 1)])
 
         self.lag_points = int(np.argmax(correlations))
         self.dead_time = self.lag_points * dt

@@ -60,22 +60,28 @@ class SupervisedDeconvolution:
         """Returns estimated model parameters {'tau', 'r', 'alpha'}, or None."""
         return self.params_hat
 
-    def reconstruct_signal(self):
-        """Reconstructs the input signal u using estimated coefficients."""
+    def reconstruct_signal(self, y=None):
+        """Reconstructs the input signal u using estimated coefficients.
+
+        Args:
+            y (np.array, optional): Sensor signal to reconstruct from, sampled at
+                the same interval as the training data. Defaults to the fed signal.
+        """
         if not self._estimation_done or self.w_hat is None:
             raise ValueError("Estimation has not been run successfully. Call estimate_params() first.")
-        if self.y is None:
+        y = self.y if y is None else np.asarray(y)
+        if y is None:
              raise ValueError("Sensor signal 'y' is not available.")
 
-        y_prime = np.log(np.maximum(self.y, self.eps))
+        y_prime = np.log(np.maximum(y, self.eps))
         w1, w2, w3 = self.w_hat
 
-        # Eq 9
+        # Eq 9: u[n] is estimated from y[n+1] and y[n], as in the fit
         u_prime_hat = w1 * y_prime[1:] + w2 * y_prime[:-1] + w3
         u_hat = np.exp(u_prime_hat)
         
-        # Padding
-        u_hat = np.insert(u_hat, 0, u_hat[0])
+        # Padding of the last sample
+        u_hat = np.append(u_hat, u_hat[-1])
         
         return u_hat
 
@@ -88,6 +94,10 @@ class SupervisedDeconvolution:
         # Matrix show in eq 11
         Y_prime = np.vstack((y_prime[1:], y_prime[:-1], np.ones(n))).T
         U_prime_target = u_prime[:-1]
+
+        # Samples marked NaN in y or u (e.g. saturated or held-out) are left out
+        finite = np.isfinite(Y_prime).all(axis=1) & np.isfinite(U_prime_target)
+        Y_prime, U_prime_target = Y_prime[finite], U_prime_target[finite]
 
         # Equivalent to eq 13
         solution = np.linalg.lstsq(Y_prime, U_prime_target, rcond=None)

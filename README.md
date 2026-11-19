@@ -149,9 +149,9 @@ The concentration estimation workflow consists of three stages:
 2. **Concentration Estimation** — Three methods are available:
    - **Raw conductance** — Direct resistance-to-conductance conversion
    - **Derivative-based** — Time derivative of conductance (smoothed with Savitzky-Golay filter)
-   - **Supervised deconvolution** — A learned model that deconvolves the sensor dynamics
+   - **Supervised deconvolution** — A learned model that deconvolves the sensor dynamics, fitted in two tracks: at the measured PLIF frames only (frame rate, 20 Hz), or at every e-nose sample with the interpolated PLIF (`plif_*_interp`) as training target (full rate, 1 kHz)
 
-3. **Evaluation** — Metrics (correlation, RMSE, etc.) are computed at the measured PLIF frames and comparison plots are generated showing PLIF against each estimation method.
+3. **Evaluation** — Both deconvolution tracks are evaluated against the measured PLIF frames only, with five-fold blocked cross-validation (each contiguous block is estimated by a model fitted on the other blocks, leaving out 1 s on either side). `save_scores()` in `f4_c_estimation.py` writes the scores for all experiments to `out/concentration_estimation/`.
 
 ## Scripts Reference
 

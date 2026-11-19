@@ -1,9 +1,18 @@
 #%%
 """Estimate PLIF concentration from e-nose signals with swappable stages.
 
-The e-nose signals are processed at their native 1 kHz rate. The estimates are
-compared with the measured PLIF frames only (20 Hz); no interpolated PLIF values
-are used.
+The e-nose signals are processed at their native 1 kHz rate. Two deconvolution
+tracks are compared:
+
+- frame rate: the model is fitted at the measured PLIF frames only (20 Hz,
+  50 ms step between the two e-nose samples it uses);
+- full rate: the model is fitted at every e-nose sample (1 kHz, 1 ms step),
+  with the PCHIP-interpolated PLIF (plif_*_interp) as training target.
+
+Both tracks are scored only against the measured PLIF frames, with blocked
+cross-validation: the run is split into contiguous blocks, and each block is
+estimated by a model fitted on the other blocks, leaving out a gap around the
+held-out block. Interpolated PLIF values are never used as ground truth.
 """
 import sys
 from pathlib import Path
@@ -17,17 +26,19 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 from src.deadtime_compensation import DeadTimeCompensator
 from src.supervised_deconv import SupervisedDeconvolution
 from utils.plotting import configure_style, export_figure
-from utils.constants import ENOSE_ZONE_SENSOR, LOCATIONS, PLIF_USEFUL_BOUNDS, PLIF_SAMPLING_FREQUENCY
+from utils.constants import ENOSE_ZONE_SENSOR, LOCATIONS, PLIF_USEFUL_BOUNDS, PLIF_SAMPLING_FREQUENCY, SPEEDS
 from utils.combined_io import load_combined_csv, zero_lag_smooth_for_downsampling
-from utils.misc import metrics
 
-# DEFAULT_EXPERIMENTS = ["56", "57", "58", "59", "60", "61", "70", "71", "75", "76"]
+ALL_EXPERIMENTS = ["56", "57", "58", "59", "60", "61", "70", "71", "75", "76"]
 DEFAULT_EXPERIMENTS = ["56"]
+N_FOLDS = 5
+GAP_S = 1.0
+OUT_DIR = Path(__file__).resolve().parent.parent / "out" / "concentration_estimation"
 
 
 def load_enose_plif(exp_id: str) -> pd.DataFrame:
-    """Load combined e-nose/PLIF data for an experiment id."""
-    return load_combined_csv(f"r{exp_id}", sampling="interpolated")
+    """Load combined e-nose/PLIF data for an experiment id (saturated readings as NaN)."""
+    return load_combined_csv(f"r{exp_id}", sampling="interpolated", mask_saturated=True)
 
 
 def default_alignment():
@@ -37,7 +48,7 @@ def default_alignment():
 
 def default_derivative_transform(conductance: np.ndarray, dt: float) -> np.ndarray:
     """Differentiate and smooth conductance (swap for custom filters).
-    
+
     Uses an adaptive window length based on data size to avoid
     savgol_filter errors when the array is smaller than the fixed window.
     """
@@ -60,79 +71,125 @@ def align_signals(aligner, time_s, conductance, frame_mask, plif_frames):
     return aligner.fit_frames(time_s, conductance, frame_mask, plif_frames)
 
 
-def run_deconvolution(model, conductance_aligned: np.ndarray, plif_aligned: np.ndarray) -> np.ndarray:
-    """Run supervised deconvolution model to reconstruct PLIF."""
-    model.feed_data(y=conductance_aligned, u=plif_aligned)
-    model.estimate_params()
-    return model.reconstruct_signal()
+def cross_validated_deconvolution(model_factory, y: np.ndarray, u: np.ndarray, time_s: np.ndarray,
+                                  n_folds: int = N_FOLDS, gap_s: float = GAP_S) -> np.ndarray:
+    """Out-of-fold deconvolution estimates of u from y.
+
+    The time range is split into `n_folds` contiguous blocks. For each block the
+    model is fitted on the samples outside the block and outside a gap of
+    `gap_s` on either side of it, and the block is reconstructed from y.
+    """
+    edges = np.linspace(time_s[0], time_s[-1], n_folds + 1)
+    edges[-1] = np.inf
+    estimate = np.full(len(y), np.nan)
+    for start, stop in zip(edges[:-1], edges[1:]):
+        held_out = (time_s >= start) & (time_s < stop)
+        excluded = (time_s >= start - gap_s) & (time_s < stop + gap_s)
+        model = model_factory()
+        model.feed_data(y=y, u=np.where(excluded, np.nan, u))
+        model.estimate_params()
+        estimate[held_out] = model.reconstruct_signal(y)[held_out]
+    return estimate
 
 
-def slice_window(time_s: np.ndarray, *series: np.ndarray, window: tuple[float, float]) -> tuple[np.ndarray, ...]:
-    """Return time and series masked to a time window."""
-    t_min, t_max = window
-    mask = (time_s <= t_max) & (time_s > t_min)
-    return tuple(arr[mask] for arr in (time_s, *series))
+def pearson_r(a: np.ndarray, b: np.ndarray) -> float:
+    """Pearson r over the samples where both signals are finite."""
+    finite = np.isfinite(a) & np.isfinite(b)
+    return float(np.corrcoef(a[finite], b[finite])[0, 1])
 
 
-def plot_estimations(
-    exp_id: str,
-    loc_key: str,
-    zone: str,
-    window: tuple[float, float],
-    time_s_aligned: np.ndarray,
-    plif_aligned: np.ndarray,
-    raw_est: np.ndarray,
-    deriv_est: np.ndarray,
-    deconv_est: np.ndarray,
-) -> None:
-    """Plot PLIF ground truth against three estimation methods."""
-    t_masked, plif_masked, raw_masked, deriv_masked, deconv_masked = slice_window(
-        time_s_aligned, plif_aligned, raw_est, deriv_est, deconv_est, window=window
+def estimate_zone(df: pd.DataFrame, zone: str, alignment_factory=default_alignment,
+                  derivative_transform=default_derivative_transform,
+                  deconv_factory=default_deconv_model) -> dict:
+    """Run both deconvolution tracks for one zone and score them at the measured frames."""
+    sensor_col = ENOSE_ZONE_SENSOR[zone]
+    frames = df["plif_image"].to_numpy(dtype=bool)
+    frame_idx = np.flatnonzero(frames)
+    time_s = df["time_s"].to_numpy()
+    plif = df.loc[frames, f"plif_{zone}"].to_numpy()
+    plif_interp = df[f"plif_{zone}_interp"].to_numpy()
+    conductance = 1.0 / df[sensor_col].to_numpy()
+
+    # E-nose processing at 1 kHz: derivative, and low-pass (cutoff 8 Hz).
+    dt = float(np.mean(np.diff(time_s)))
+    derivative = derivative_transform(conductance, dt)
+    conductance_lowpass = zero_lag_smooth_for_downsampling(
+        conductance, source_rate_hz=1.0 / dt, target_rate_hz=PLIF_SAMPLING_FREQUENCY
     )
 
-    fig, ax = plt.subplots(nrows=3, figsize=(8, 4), sharex=True)
+    # Dead time from the measured PLIF frames; e-nose signals shifted back by it.
+    aligner = align_signals(alignment_factory(), time_s, conductance, frames, plif)
+    lag = aligner.lag_points
+
+    def shifted(signal):
+        out = np.full(len(signal), np.nan)
+        out[:len(signal) - lag] = signal[lag:]
+        return out
+
+    conductance_shifted = shifted(conductance)
+    conductance_lowpass_shifted = shifted(conductance_lowpass)
+    derivative_shifted = shifted(derivative)
+
+    # Frame-rate track: fitted at the measured frames only.
+    frame_rate = cross_validated_deconvolution(
+        lambda: deconv_factory(1.0 / PLIF_SAMPLING_FREQUENCY),
+        conductance_lowpass_shifted[frame_idx], plif, time_s[frame_idx],
+    )
+    # Full-rate track: fitted at every e-nose sample, interpolated PLIF as target.
+    full_rate = cross_validated_deconvolution(
+        lambda: deconv_factory(dt), conductance_lowpass_shifted, plif_interp, time_s,
+    )
+
+    scores = {
+        "r_raw": pearson_r(plif, conductance_lowpass_shifted[frame_idx]),
+        "r_ddt": pearson_r(plif, derivative_shifted[frame_idx]),
+        "r_frame_rate": pearson_r(plif, frame_rate),
+        "r_full_rate": pearson_r(plif, full_rate[frame_idx]),
+    }
+    return dict(
+        sensor_col=sensor_col, dead_time_s=aligner.get_dead_time(), n_frames=len(frame_idx),
+        time_s=time_s, frame_idx=frame_idx, plif=plif, conductance=conductance_shifted,
+        derivative=derivative_shifted, frame_rate=frame_rate, full_rate=full_rate, scores=scores,
+    )
+
+
+def plot_estimations(exp_id: str, loc_key: str, zone: str, window: tuple[float, float], est: dict) -> None:
+    """Plot measured PLIF frames against the e-nose estimates in a time window."""
+    time_s, frame_idx = est["time_s"], est["frame_idx"]
+    in_window = (time_s > window[0]) & (time_s <= window[1])
+    frame_in_window = in_window[frame_idx]
+    t_frames = time_s[frame_idx][frame_in_window]
+    plif = est["plif"][frame_in_window]
+    t = time_s[in_window]
     ycolor = "red"
 
-    ax[0].plot(t_masked, plif_masked, color="black", label="Ground Truth")
-    ax0_twin = ax[0].twinx()
-    ax0_twin.plot(t_masked, 1e6 * raw_masked, color=ycolor, label="Estimation")
-
-    ax[1].plot(t_masked, plif_masked, color="black", label="Ground Truth")
-    ax1_twin = ax[1].twinx()
-    ax1_twin.plot(t_masked, 1e6 * deriv_masked, color=ycolor, label="Estimation")
-
-    ax[2].plot(t_masked, plif_masked, color="black", label="Ground Truth")
-    ax2_twin = ax[2].twinx()
-    ax2_twin.plot(t_masked, deconv_masked, color=ycolor, label="Estimation")
-    ax2_twin.sharey(ax[2])
-
-    ax[2].set_xlabel("Time (s)")
-    ax[1].set_ylabel("Concentration (rel.)")
-    ax0_twin.set_ylabel("raw\nConductance\n" + r"($\mu$S)")
-    ax1_twin.set_ylabel("d/dt\nConductance\n" + r"($\mu$S/s)")
-    ax2_twin.set_ylabel("Estimated\nConcentration\n(rel.)")
-
-    ax0_twin.tick_params(axis="y", colors=ycolor)
-    ax1_twin.tick_params(axis="y", colors=ycolor)
-    ax2_twin.tick_params(axis="y", colors=ycolor)
-
-    label_x = 1.08
-    ax0_twin.yaxis.set_label_coords(label_x, 0.5)
-    ax1_twin.yaxis.set_label_coords(label_x, 0.5)
-    ax2_twin.yaxis.set_label_coords(label_x, 0.5)
-
-    for axx in [ax[0], ax[1], ax[2], ax0_twin, ax1_twin, ax2_twin]:
-        axx.spines[["top"]].set_visible(False)
-
-    for axx in [ax[0], ax[1], ax[2]]:
+    fig, ax = plt.subplots(nrows=4, figsize=(8, 5.2), sharex=True)
+    panels = [
+        (t, 1e6 * est["conductance"][in_window], "raw\nConductance\n" + r"($\mu$S)", "e-nose raw (1 kHz)"),
+        (t, 1e6 * est["derivative"][in_window], "d/dt\nConductance\n" + r"($\mu$S/s)", "e-nose d/dt (1 kHz)"),
+        (t_frames, est["frame_rate"][frame_in_window], "Estimated\nConcentration\n(rel.)",
+         "deconvolution, frame rate (20 Hz)"),
+        (t, est["full_rate"][in_window], "Estimated\nConcentration\n(rel.)", "deconvolution, full rate (1 kHz)"),
+    ]
+    for i, (axx, (tx, values, ylabel, label)) in enumerate(zip(ax, panels)):
+        axx.plot(t_frames, plif, color="black", lw=0.6)
+        axx.plot(t_frames, plif, "o", color="black", ms=1.8)
+        twin = axx.twinx()
+        twin.plot(tx, values, color=ycolor, lw=0.9, marker="o" if i == 2 else None, ms=1.8)
+        if i >= 2:
+            twin.sharey(axx)
+        twin.set_ylabel(ylabel)
+        twin.tick_params(axis="y", colors=ycolor)
+        twin.yaxis.set_label_coords(1.08, 0.5)
+        twin.spines[["top"]].set_visible(False)
+        axx.spines[["top", "right"]].set_visible(False)
         axx.grid(which="major", alpha=0.6, linestyle="--")
         axx.minorticks_on()
-        axx.spines[["right"]].set_visible(False)
-
-    ax[0].text(window[0] + 3.5, 0.037, "PLIF", color="k", weight="bold", size=11)
-    ax[0].text(window[0] + 0.05, 0.035, "e-nose raw", color=ycolor, weight="bold", size=11)
-    ax[1].text(window[0] + 0.05, 0.035, "e-nose d/dt", color=ycolor, weight="bold", size=11)
-    ax[2].text(window[0] + 0.05, 0.035, "e-nose deconvolution", color=ycolor, weight="bold", size=11)
+        axx.text(0.01, 0.97, label, transform=axx.transAxes, color=ycolor, weight="bold", size=10, va="top")
+    ax[0].text(0.99, 1.02, "PLIF (measured frames)", transform=ax[0].transAxes, color="k",
+               weight="bold", size=10, va="bottom", ha="right")
+    ax[-1].set_xlabel("Time (s)")
+    fig.supylabel("Concentration (rel.)", x=0.04, size=plt.rcParams["axes.labelsize"])
 
     export_figure(fig, base_name=f"r{exp_id}_{loc_key}_{zone}_concentration_estimation", bbox_inches="tight")
     plt.tight_layout()
@@ -145,74 +202,56 @@ def process_experiment(
     derivative_transform=default_derivative_transform,
     deconv_factory=default_deconv_model,
     window: tuple[float, float] = (120, 130),
-) -> None:
+    plot: bool = True,
+) -> list[dict]:
     """Run estimation pipeline for one experiment with pluggable stages.
 
     Pass custom factories/transforms to inject alternative alignment (dead-time
     models), filtering/derivative logic, or deconvolution/inversion methods.
+    Returns one row of scores per zone.
     """
     df = load_enose_plif(exp_id)
     loc_key = LOCATIONS[f"r{exp_id}"]
 
-    for zone, _ in PLIF_USEFUL_BOUNDS[loc_key].items():
-        print(f"Zone {zone}")
-        sensor_col = ENOSE_ZONE_SENSOR[zone]
-        frames = df["plif_image"].to_numpy(dtype=bool)
-        time_s = df["time_s"].to_numpy()
-        plif = df.loc[frames, f"plif_{zone}"].to_numpy()
-        conductance = 1.0 / df[sensor_col].to_numpy()
-
-        # E-nose processing at 1 kHz: derivative, and low-pass before sampling at 20 Hz.
-        dt = float(np.mean(np.diff(time_s)))
-        derivative = derivative_transform(conductance, dt)
-        conductance_lowpass = zero_lag_smooth_for_downsampling(
-            conductance, source_rate_hz=1.0 / dt, target_rate_hz=PLIF_SAMPLING_FREQUENCY
-        )
-
-        # Dead time from the measured PLIF frames, then sample at frame time + dead time.
-        aligner = align_signals(alignment_factory(), time_s, conductance, frames, plif)
-        time_aligned = time_s[frames][aligner.frame_keep]
-        plif_aligned = plif[aligner.frame_keep]
-        conductance_aligned = aligner.transform_frames(conductance_lowpass)
-        deriv_est = aligner.transform_frames(derivative)
-
-        deconv = deconv_factory()
-        deconv_est = run_deconvolution(deconv, conductance_aligned, plif_aligned)
-
-        print(f"  {sensor_col}: dead time {1e3 * aligner.get_dead_time():.0f} ms")
-        for label, estimate in (("raw", conductance_aligned), ("d/dt", deriv_est), ("deconvolution", deconv_est)):
-            in_window = (time_aligned > window[0]) & (time_aligned <= window[1])
-            print(
-                f"  Pearson r, {label}: {np.corrcoef(plif_aligned, estimate)[0, 1]:.2f} (full run), "
-                f"{np.corrcoef(plif_aligned[in_window], estimate[in_window])[0, 1]:.2f} (plotted window)"
-            )
-
-        metrics(plif_aligned, conductance_aligned)
-        metrics(plif_aligned, deriv_est)
-        metrics(plif_aligned, deconv_est)
-
-        plot_estimations(
-            exp_id=exp_id,
-            loc_key=loc_key,
-            zone=zone,
-            window=window,
-            time_s_aligned=time_aligned,
-            plif_aligned=plif_aligned,
-            raw_est=conductance_aligned,
-            deriv_est=deriv_est,
-            deconv_est=deconv_est,
-        )
+    rows = []
+    for zone in PLIF_USEFUL_BOUNDS[loc_key]:
+        est = estimate_zone(df, zone, alignment_factory, derivative_transform, deconv_factory)
+        print(f"  Zone {zone}, {est['sensor_col']}: dead time {1e3 * est['dead_time_s']:.0f} ms, "
+              + ", ".join(f"{k} {v:.2f}" for k, v in est["scores"].items()))
+        rows.append(dict(exp=f"r{exp_id}", location=loc_key[1:], speed_m_s=SPEEDS[f"r{exp_id}"], zone=zone,
+                         sensor=est["sensor_col"].replace("R_gas_", ""),
+                         dead_time_ms=round(1e3 * est["dead_time_s"]), n_frames=est["n_frames"],
+                         **{k: round(v, 3) for k, v in est["scores"].items()}))
+        if plot:
+            plot_estimations(exp_id, loc_key, zone, window, est)
+    return rows
 
 
-def run_all_experiments(exp_ids: list[str] | None = None, **kwargs) -> None:
-    """Run the estimation workflow across experiments."""
+def run_all_experiments(exp_ids: list[str] | None = None, **kwargs) -> pd.DataFrame:
+    """Run the estimation workflow across experiments and return the scores."""
     exp_ids = exp_ids or DEFAULT_EXPERIMENTS
+    rows = []
     for exp_id in exp_ids:
         print(f"Experiment r{exp_id}")
-        process_experiment(exp_id, **kwargs)
+        rows += process_experiment(exp_id, **kwargs)
+    return pd.DataFrame(rows)
+
+
+def save_scores(exp_ids: list[str] | None = None) -> pd.DataFrame:
+    """Score both tracks for all experiments and zones and save the tables."""
+    scores = run_all_experiments(exp_ids or ALL_EXPERIMENTS, plot=False)
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    scores.to_csv(OUT_DIR / "scores.csv", index=False)
+    scores["device"] = np.where(scores["zone"].isin(["A", "B"]), "MiCS-6814", "CCS801")
+    summary = (scores.groupby(["device", "location", "speed_m_s"])
+               [["r_raw", "r_ddt", "r_frame_rate", "r_full_rate"]].mean().round(2))
+    summary.to_csv(OUT_DIR / "scores_summary.csv")
+    print(summary)
+    return scores
 
 
 if __name__ == "__main__":
     run_all_experiments()
+    save_scores()
 
 # %%
